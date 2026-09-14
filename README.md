@@ -2,7 +2,8 @@
 
 A Go zot extension that ports the core feature and interaction model of
 `npm:@mrclrchtr/supi-ask-user` to zot: an LLM-callable `ask_user` tool that
-opens a blocking, keyboard-driven decision form.
+opens a blocking, keyboard-driven decision form. It requires zot v0.3.73 or
+newer, which provides cancellable interactive extension tools.
 
 ## Current proposal / implementation
 
@@ -14,11 +15,16 @@ opens a blocking, keyboard-driven decision form.
 - A review screen before submission.
 - Unanswered questions produce a `needs_discussion` result.
 - Escape or closing the panel cancels the tool call.
+- Cancelling the agent turn or shutting down zot closes the panel and cancels
+  the form.
 - No network requests, external process, or persistent answer storage.
 
 The panel uses zot's native extension panel API, so it works without a second
-TUI dependency. This is intentionally the first slice: unlike Pi's richer
-custom component API, zot panels currently provide lines plus key events. The
+TUI dependency. The `ask_user` tool is registered as an interactive tool, so
+zot does not apply its normal 60-second extension-tool timeout while the form
+is open. This requires an interactive zot host; headless modes cannot display
+the panel. This is intentionally the first slice: unlike Pi's richer custom
+component API, zot panels currently provide lines plus key events. The
 interaction is therefore equivalent in behavior, while rendering remains
 textual.
 

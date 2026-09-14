@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -49,11 +50,12 @@ type form struct {
 	result       chan ext.ToolResult
 	once         sync.Once
 	e            *ext.Extension
+	panelID      string
 }
 
 func main() {
 	e := ext.New(name, version)
-	e.Tool("ask_user", "Ask the user one focused decision using a structured keyboard-driven form.", json.RawMessage(schema), func(raw json.RawMessage) ext.ToolResult {
+	e.InteractiveTool("ask_user", "Ask the user one focused decision using a structured keyboard-driven form.", json.RawMessage(schema), func(ctx context.Context, raw json.RawMessage) ext.ToolResult {
 		var in params
 		if err := json.Unmarshal(raw, &in); err != nil {
 			return ext.TextErrorResult("invalid ask_user arguments: " + err.Error())
@@ -63,7 +65,13 @@ func main() {
 			return ext.TextErrorResult(err.Error())
 		}
 		f.open()
-		return <-f.result
+		select {
+		case result := <-f.result:
+			return result
+		case <-ctx.Done():
+			f.cancel("ask_user cancelled")
+			return ext.TextErrorResult("ask_user cancelled")
+		}
 	})
 	if err := e.Run(); err != nil {
 		e.Logf("fatal: %v", err)
@@ -76,6 +84,7 @@ func newForm(e *ext.Extension, in params) (*form, error) {
 		return nil, fmt.Errorf("ask_user supports 1-10 questions (got %d)", len(in.Questions))
 	}
 	f := &form{e: e, title: strings.TrimSpace(in.Title), intro: strings.TrimSpace(in.Intro), mode: "answer", result: make(chan ext.ToolResult, 1)}
+	f.panelID = fmt.Sprintf("ask-user-%p", f)
 	seen := map[string]bool{}
 	for _, q := range in.Questions {
 		q.ID, q.Header, q.Prompt = strings.TrimSpace(q.ID), strings.TrimSpace(q.Header), strings.TrimSpace(q.Prompt)
@@ -140,21 +149,29 @@ func (f *form) selectValue(q *question, value string) {
 		}
 	}
 }
-func (f *form) pid() string { return fmt.Sprintf("ask-user-%p", f) }
+func (f *form) pid() string { return f.panelID }
 func (f *form) open() {
 	pid := f.pid()
-	finish := func(r ext.ToolResult) { f.once.Do(func() { f.e.ClosePanel(pid); f.result <- r }) }
-	f.e.OnPanelKey(pid, func(key, text string) { f.key(pid, key, text, finish) }, func() { finish(ext.TextErrorResult("ask_user cancelled: the form was closed")) })
+	f.e.OnPanelKey(pid, func(key, text string) { f.key(pid, key, text) }, func() {
+		f.cancel("ask_user cancelled: the form was closed")
+	})
 	f.e.OpenPanel(pid, f.panelTitle(), f.lines(), f.footer())
 }
-func (f *form) redraw(pid string) { f.e.RenderPanel(pid, f.panelTitle(), f.lines(), f.footer()) }
-func (f *form) key(pid, key, text string, finish func(ext.ToolResult)) {
+func (f *form) finish(result ext.ToolResult) {
+	f.once.Do(func() {
+		f.e.ClosePanel(f.pid())
+		f.result <- result
+	})
+}
+func (f *form) cancel(message string) { f.finish(ext.TextErrorResult(message)) }
+func (f *form) redraw(pid string)     { f.e.RenderPanel(pid, f.panelTitle(), f.lines(), f.footer()) }
+func (f *form) key(pid, key, text string) {
 	if f.mode == "comment" || f.mode == "option-comment" {
 		f.commentKey(pid, key, text)
 		return
 	}
 	if f.mode == "review" {
-		f.reviewKey(pid, key, text, finish)
+		f.reviewKey(pid, key, text)
 		return
 	}
 	q := &f.questions[f.cursor]
@@ -276,7 +293,7 @@ func (f *form) commentKey(pid, key, text string) {
 	}
 	f.redraw(pid)
 }
-func (f *form) reviewKey(pid, key, text string, finish func(ext.ToolResult)) {
+func (f *form) reviewKey(pid, key, text string) {
 	switch key {
 	case "left":
 		f.mode = "answer"
@@ -286,7 +303,8 @@ func (f *form) reviewKey(pid, key, text string, finish func(ext.ToolResult)) {
 	case "down":
 		f.move(1)
 	case "enter":
-		finish(f.resultValue())
+		f.finish(f.resultValue())
+		return
 	case "rune":
 		switch strings.ToLower(text) {
 		case "e":
@@ -296,7 +314,8 @@ func (f *form) reviewKey(pid, key, text string, finish func(ext.ToolResult)) {
 			f.questions[f.cursor].Answered = false
 		}
 	case "esc":
-		finish(ext.TextErrorResult("ask_user cancelled by user"))
+		f.cancel("ask_user cancelled by user")
+		return
 	}
 	f.redraw(pid)
 }
