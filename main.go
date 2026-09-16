@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -101,6 +102,7 @@ func newForm(e *ext.Extension, in params) (*form, error) {
 			if s, ok := q.Recommendation.(string); ok {
 				item.Text = s
 				item.Recommendation = s
+				item.Answered = strings.TrimSpace(s) != ""
 			}
 		case "choice":
 			if len(q.Options) < 2 || len(q.Options) > 12 {
@@ -125,6 +127,7 @@ func newForm(e *ext.Extension, in params) (*form, error) {
 			if !q.Multi && !hasSelection(item.Options) {
 				item.Options[0].Selected = true
 			}
+			item.Answered = hasSelection(item.Options)
 		default:
 			return nil, fmt.Errorf("question %q has unsupported type %q", q.ID, q.Type)
 		}
@@ -174,6 +177,11 @@ func (f *form) key(pid, key, text string) {
 		f.reviewKey(pid, key, text)
 		return
 	}
+	// zot delivers the spacebar as a rune event (text == " "), not as a
+	// named "space" key event. Normalize it before handling answer controls.
+	if key == "rune" && text == " " {
+		key = "space"
+	}
 	q := &f.questions[f.cursor]
 	switch key {
 	case "up":
@@ -183,10 +191,12 @@ func (f *form) key(pid, key, text string) {
 	case "left":
 		if f.cursor > 0 {
 			f.cursor--
+			f.option = 0
 		}
 	case "right", "tab":
 		if f.cursor < len(f.questions)-1 {
 			f.cursor++
+			f.option = 0
 		} else {
 			f.mode = "review"
 		}
@@ -203,33 +213,37 @@ func (f *form) key(pid, key, text string) {
 					q.Options[i].Selected = i == f.option
 				}
 			}
+			q.Answered = true
 		}
 	case "enter":
-		f.acceptAnswer()
+		f.next()
 	case "backspace":
 		if q.Type == "text" {
 			r := []rune(q.Text)
 			if len(r) > 0 {
 				q.Text = string(r[:len(r)-1])
 			}
+			q.Answered = strings.TrimSpace(q.Text) != ""
 		}
 	case "rune":
+		// Text answers accept every rune. Answer-mode shortcuts such as `u`
+		// must not steal letters from free-text input (for example, typing
+		// "user" should not mark the question unanswered).
+		if q.Type == "text" {
+			q.Text += text
+			q.Answered = strings.TrimSpace(q.Text) != ""
+			break
+		}
 		switch strings.ToLower(text) {
 		case "c":
 			f.mode = "comment"
 			f.comment = q.Comment
 		case "n":
-			if q.Type == "choice" {
-				f.mode = "option-comment"
-				f.comment = q.Options[f.option].Comment
-			}
+			f.mode = "option-comment"
+			f.comment = q.Options[f.option].Comment
 		case "u":
 			q.Answered = false
 			f.next()
-		default:
-			if q.Type == "text" {
-				q.Text += text
-			}
 		}
 	}
 	f.redraw(pid)
@@ -252,14 +266,6 @@ func (f *form) move(delta int) {
 			f.cursor--
 		}
 	}
-}
-func (f *form) acceptAnswer() {
-	q := &f.questions[f.cursor]
-	q.Answered = true
-	if q.Type == "text" && strings.TrimSpace(q.Text) == "" {
-		q.Answered = false
-	}
-	f.next()
 }
 func (f *form) next() {
 	if f.cursor < len(f.questions)-1 {
@@ -320,6 +326,8 @@ func (f *form) reviewKey(pid, key, text string) {
 	f.redraw(pid)
 }
 
+func dimText(s string) string { return "\x1b[2m" + s + "\x1b[22m" }
+
 func (f *form) panelTitle() string {
 	if f.title != "" {
 		return "Ask User — " + f.title
@@ -331,7 +339,7 @@ func (f *form) lines() []string {
 		return f.reviewLines()
 	}
 	q := f.questions[f.cursor]
-	lines := []string{fmt.Sprintf("  %d/%d  %s", f.cursor+1, len(f.questions), q.Header), "", "  " + q.Prompt, ""}
+	lines := []string{f.breadcrumbs(), "", "  " + q.Prompt, ""}
 	if f.intro != "" && f.cursor == 0 {
 		lines = append([]string{"  " + f.intro, ""}, lines...)
 	}
@@ -363,13 +371,69 @@ func (f *form) lines() []string {
 			}
 		}
 	}
-	if q.Comment != "" {
+	if f.mode == "comment" {
+		lines = append(lines, "", "  Comment: "+f.comment+"▌")
+	} else if f.mode == "option-comment" {
+		lines = append(lines, "", "  Option comment: "+f.comment+"▌")
+	} else if q.Comment != "" {
 		lines = append(lines, "", "  Comment: "+q.Comment)
 	}
 	return lines
 }
+func (f *form) breadcrumbs() string {
+	plainSteps := make([]string, 0, len(f.questions))
+	for i, q := range f.questions {
+		mark := "○"
+		if q.Answered {
+			mark = "✓"
+		}
+		plainSteps = append(plainSteps, fmt.Sprintf("%d %s %s", i+1, mark, q.Header))
+	}
+
+	// Extensions do not receive the panel width from zot. COLUMNS is the
+	// terminal width when it is available; 80 is a conservative fallback.
+	// Keep the stepper on one line only when the complete, unstyled content
+	// fits. This also lets a terminal resize naturally switch layouts on the
+	// next redraw.
+	width := 80
+	if columns := os.Getenv("COLUMNS"); columns != "" {
+		if n, err := strconv.Atoi(columns); err == nil && n > 0 {
+			width = n
+		}
+	}
+	if stepWidth := len("  ") + len(strings.Join(plainSteps, "   ")); stepWidth <= width-4 {
+		steps := make([]string, 0, len(f.questions))
+		for i, step := range plainSteps {
+			steps = append(steps, f.styleStep(i, step))
+		}
+		// Keep the line indented so a leading step number is not interpreted as
+		// an ordered-list marker by the panel renderer.
+		return "  " + strings.Join(steps, "   ")
+	}
+
+	steps := make([]string, 0, len(f.questions))
+	for i, step := range plainSteps {
+		steps = append(steps, "  "+f.styleStep(i, step))
+	}
+	return strings.Join(steps, "\n")
+}
+
+func (f *form) styleStep(index int, step string) string {
+	if index == f.cursor {
+		parts := strings.SplitN(step, " ", 3)
+		if len(parts) == 3 {
+			step = parts[0] + " ● " + parts[2]
+		}
+		return "\x1b[1;36m" + step + "\x1b[0m"
+	}
+	if f.questions[index].Answered {
+		return "\x1b[32m" + step + "\x1b[0m"
+	}
+	return dimText(step)
+}
+
 func (f *form) reviewLines() []string {
-	lines := []string{"  Review your answers", ""}
+	lines := []string{"  Review your answers", "", f.breadcrumbs(), ""}
 	if f.intro != "" {
 		lines = append(lines, "  "+f.intro, "")
 	}
@@ -385,6 +449,9 @@ func (f *form) reviewLines() []string {
 			cursor = "› "
 		}
 		lines = append(lines, fmt.Sprintf("%s%s %s: %s", cursor, mark, q.Header, answer))
+		if q.Comment != "" {
+			lines = append(lines, "    "+dimText("Comment: "+q.Comment))
+		}
 	}
 	if f.comment != "" {
 		lines = append(lines, "", "  Form comment: "+f.comment)
