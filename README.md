@@ -13,7 +13,6 @@ newer, which provides cancellable interactive extension tools.
 - Choice descriptions/details are shown beside the focused option.
 - Form, question, and option comments.
 - A review screen before submission.
-- Unanswered questions produce a `needs_discussion` result.
 - Escape or closing the panel cancels the tool call.
 - Cancelling the agent turn or shutting down zot closes the panel and cancels
   the form.
@@ -81,7 +80,6 @@ The model can then call `ask_user` with a payload such as:
 - `Tab`: advance to the next question
 - `c`: comment on the current question
 - `n`: comment on the focused choice
-- `u`: mark the question unanswered
 - `e`: edit the focused review row; `Esc`: cancel
 
 ## Compatibility notes

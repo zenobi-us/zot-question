@@ -216,6 +216,10 @@ func (f *form) key(pid, key, text string) {
 			q.Answered = true
 		}
 	case "enter":
+		if len(f.questions) == 1 {
+			f.finish(f.resultValue())
+			return
+		}
 		f.next()
 	case "backspace":
 		if q.Type == "text" {
@@ -226,9 +230,8 @@ func (f *form) key(pid, key, text string) {
 			q.Answered = strings.TrimSpace(q.Text) != ""
 		}
 	case "rune":
-		// Text answers accept every rune. Answer-mode shortcuts such as `u`
-		// must not steal letters from free-text input (for example, typing
-		// "user" should not mark the question unanswered).
+		// Text answers accept every rune, including letters used by answer-mode
+		// shortcuts.
 		if q.Type == "text" {
 			q.Text += text
 			q.Answered = strings.TrimSpace(q.Text) != ""
@@ -241,9 +244,6 @@ func (f *form) key(pid, key, text string) {
 		case "n":
 			f.mode = "option-comment"
 			f.comment = q.Options[f.option].Comment
-		case "u":
-			q.Answered = false
-			f.next()
 		}
 	}
 	f.redraw(pid)
@@ -316,8 +316,6 @@ func (f *form) reviewKey(pid, key, text string) {
 		case "e":
 			f.mode = "answer"
 			f.cursor = f.cursor % len(f.questions)
-		case "u":
-			f.questions[f.cursor].Answered = false
 		}
 	case "esc":
 		f.cancel("ask_user cancelled by user")
@@ -440,10 +438,6 @@ func (f *form) reviewLines() []string {
 	for i, q := range f.questions {
 		mark := "✓"
 		answer := f.answerText(q)
-		if !q.Answered {
-			mark = "?"
-			answer = "unanswered"
-		}
 		cursor := "  "
 		if i == f.cursor {
 			cursor = "› "
@@ -477,7 +471,10 @@ func (f *form) footer() string {
 	if f.mode == "comment" || f.mode == "option-comment" {
 		return "type comment · enter save · esc cancel"
 	}
-	return "↑/↓ move · space select · enter next · tab next · c comment · u unanswered · esc cancel"
+	if len(f.questions) == 1 {
+		return "↑/↓ move · space select · enter submit · c comment · esc cancel"
+	}
+	return "↑/↓ move · space select · enter next · tab next · c comment · esc cancel"
 }
 
 func (f *form) resultValue() ext.ToolResult {

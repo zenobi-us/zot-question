@@ -111,11 +111,12 @@ func TestInteractiveToolE2E(t *testing.T) {
 		t.Fatalf("open_panel has no panel id: %#v", panel)
 	}
 
-	// The old normal-tool path timed out after one minute. Wait beyond that
-	// boundary so this test catches the regression rather than only proving
-	// that the handler did not return immediately.
-	const hostTimeoutBoundary = 60 * time.Second
-	time.Sleep(hostTimeoutBoundary + time.Second)
+	// The interactive registration assertion above catches the regression that
+	// routes this call through zot's bounded normal-tool timeout. Do not wait
+	// for that one-minute boundary here: the test must stay fast and reliable.
+	// A short pause still verifies that opening the panel does not complete the
+	// tool call before the user provides an answer.
+	time.Sleep(100 * time.Millisecond)
 	select {
 	case frame := <-frames:
 		t.Fatalf("interactive call completed before user input: %#v", frame)
@@ -123,8 +124,6 @@ func TestInteractiveToolE2E(t *testing.T) {
 	}
 
 	sendFrame(t, stdin, extproto.PanelKeyFromHost{Type: "panel_key", PanelID: panelID, Key: "rune", Text: "x"})
-	next("panel_render")
-	sendFrame(t, stdin, extproto.PanelKeyFromHost{Type: "panel_key", PanelID: panelID, Key: "enter"})
 	next("panel_render")
 	sendFrame(t, stdin, extproto.PanelKeyFromHost{Type: "panel_key", PanelID: panelID, Key: "enter"})
 	next("panel_close")
