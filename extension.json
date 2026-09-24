@@ -1,8 +1,11 @@
 {
   "name": "zot-question",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "exec": "go",
-  "args": ["run", "main.go"],
+  "args": [
+    "run",
+    "main.go"
+  ],
   "language": "go",
   "description": "Structured, keyboard-driven decision forms for agent-user questions",
   "enabled": true
