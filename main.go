@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/patriceckhart/zot/packages/agent/ext"
+	"github.com/patriceckhart/zot/packages/tui"
 )
 
 const name = "zot-question"
@@ -332,6 +333,39 @@ func (f *form) panelTitle() string {
 	}
 	return "Ask User"
 }
+
+// introLines renders the preamble with the same Markdown subset used by zot's
+// transcript and wraps the resulting ANSI text to the available terminal width.
+// Panel lines are otherwise opaque to the host: passing the whole intro as one
+// string makes a long preamble get clipped instead of reflowing.
+func (f *form) introLines() []string {
+	width := 80
+	if columns := os.Getenv("COLUMNS"); columns != "" {
+		if n, err := strconv.Atoi(columns); err == nil && n > 0 {
+			width = n
+		}
+	}
+	// Keep the two-cell panel indent and a little right-side breathing room.
+	width -= 4
+	if width < 1 {
+		width = 1
+	}
+
+	rendered := tui.RenderMarkdown(f.intro, tui.Dark, width)
+	result := make([]string, 0, strings.Count(rendered, "\n")+1)
+	for _, line := range strings.Split(rendered, "\n") {
+		wrapped := tui.WrapANSILine(line, width)
+		if len(wrapped) == 0 {
+			result = append(result, "  ")
+			continue
+		}
+		for _, part := range wrapped {
+			result = append(result, "  "+part)
+		}
+	}
+	return append(result, "")
+}
+
 func (f *form) lines() []string {
 	if f.mode == "review" {
 		return f.reviewLines()
@@ -339,8 +373,9 @@ func (f *form) lines() []string {
 	q := f.questions[f.cursor]
 	lines := []string{f.breadcrumbs(), "", "  " + q.Prompt, ""}
 	if f.intro != "" && f.cursor == 0 {
-		lines = append([]string{"  " + f.intro, ""}, lines...)
+		lines = append(f.introLines(), lines...)
 	}
+
 	if q.Type == "text" {
 		value := q.Text
 		if value == "" && q.Placeholder != "" {
@@ -433,7 +468,7 @@ func (f *form) styleStep(index int, step string) string {
 func (f *form) reviewLines() []string {
 	lines := []string{"  Review your answers", "", f.breadcrumbs(), ""}
 	if f.intro != "" {
-		lines = append(lines, "  "+f.intro, "")
+		lines = append(lines, f.introLines()...)
 	}
 	for i, q := range f.questions {
 		mark := "✓"
